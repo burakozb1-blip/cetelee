@@ -1194,7 +1194,7 @@ async function start() {
 
   let config;
   try {
-    ({ firebaseConfig: config } = await import('../firebase-config.js'));
+    ({ firebaseConfig: config } = await import('./firebase-config.js'));
   } catch (error) {
     console.error(error);
     store.setPhase('config');
