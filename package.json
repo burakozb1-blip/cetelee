@@ -1,0 +1,9 @@
+{
+  "name": "cetele",
+  "private": true,
+  "type": "module",
+  "description": "Kişisel alışkanlık takibi. Derleme gerektirmez; bu dosya yalnızca testleri çalıştırmak içindir.",
+  "scripts": {
+    "test": "node --test tests/core.test.mjs"
+  }
+}

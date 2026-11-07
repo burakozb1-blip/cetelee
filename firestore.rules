@@ -1,0 +1,14 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Oturum açmış her kullanıcı yalnızca kendi users/{uid} ağacını okuyup yazabilir.
+    // Bu kuralda tarih koşulu yoktur, süresi dolmaz.
+    match /users/{uid}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // Burada eşleşmeyen tüm yollar Firestore tarafından varsayılan olarak reddedilir.
+  }
+}

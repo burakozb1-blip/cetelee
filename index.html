@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Çetele</title>
+  <meta name="description" content="Her gün yapmak istediğin alışkanlıkları takip et.">
+  <meta name="theme-color" content="#FFFFFF">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <script>
+    // Sayfa çizilmeden önce kayıtlı temayı uygular, renk sıçramasını önler.
+    try {
+      var tema = localStorage.getItem('cetele-tema');
+      if (tema === 'light' || tema === 'dark') document.documentElement.dataset.theme = tema;
+    } catch (e) {}
+  </script>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <div class="center"><p role="status">Yükleniyor…</p></div>
+  </div>
+  <p id="sync" class="sync" role="status" hidden>Kaydediliyor…</p>
+  <div id="toasts" class="toasts"></div>
+  <noscript><p class="center">Çetele'yi kullanmak için tarayıcında JavaScript'i etkinleştir.</p></noscript>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
