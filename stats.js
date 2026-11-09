@@ -5,10 +5,11 @@
 // - Bir alışkanlığın sayılan günleri başlangıç tarihi (dahil) ile bugün (dahil) arasındadır.
 // - Başlangıçtan önceki ve gelecekteki işaretler hiçbir hesaba girmez, ama silinmez.
 // - Arşivde geçen günler yapılmamış sayılmaz. O günlerde işaret varsa yapılmış sayılır.
+// - Süresi olan alışkanlıkta (örneğin 40 gün) bitişten sonraki günler hiçbir hesaba girmez.
 // - Veri yoksa oran null döner; 0'a bölme yapılmaz.
 
 import {
-  addDays, addMonths, endOfMonth, endOfWeek, formatShort, keyToNum, numToKey,
+  addDays, addMonths, diffDays, endOfMonth, endOfWeek, formatShort, keyToNum, numToKey,
   parseKey, startOfMonth, startOfWeek, AYLAR_KISA, formatDayMonth,
 } from './dates.js';
 
@@ -31,8 +32,20 @@ export function isInArchive(habit, key) {
   return (habit.archivedRanges || []).some((r) => key >= r.from && (r.to == null || key <= r.to));
 }
 
+// Süreli alışkanlığın son günü. Süre yoksa null.
+export function endDate(habit) {
+  return Number.isInteger(habit.duration) && habit.duration > 0 ? addDays(habit.startDate, habit.duration - 1) : null;
+}
+
+export function isFinished(habit, today) {
+  const end = endDate(habit);
+  return end !== null && today > end;
+}
+
 export function isCounted(habit, key, done, today) {
   if (key < habit.startDate || key > today) return false;
+  const end = endDate(habit);
+  if (end !== null && key > end) return false;
   if (done.has(key)) return true;
   return !isInArchive(habit, key);
 }
@@ -97,6 +110,8 @@ export function habitStats(habit, done = EMPTY, today) {
 export function habitsForDay(habits, doneMap, day, today) {
   return habits.filter((h) => {
     if (day < h.startDate || day > today) return false;
+    const end = endDate(h);
+    if (end !== null && day > end) return false;
     if (h.archived && day === today) return false;
     const done = doneMap.get(h.id) || EMPTY;
     return done.has(day) || !isInArchive(h, day);
@@ -190,7 +205,7 @@ export function monthlySeries(habits, doneMap, today, count = 12) {
 // Karar verecek kadar veri olması için en az MIN_RANK_DAYS sayılan gün gerekir.
 export function rankHabits(habits, doneMap, today) {
   const rows = habits
-    .filter((h) => !h.archived)
+    .filter((h) => !h.archived && !isFinished(h, today))
     .map((habit) => {
       const done = doneMap.get(habit.id) || EMPTY;
       const stats = windowStats(habit, done, addDays(today, -29), today, today);
@@ -229,11 +244,42 @@ function comparisonSentence(cmp, thisLabel, prevDative, prevPlain) {
 export function streakLeader(habits, doneMap, today) {
   let leader = null;
   for (const habit of habits) {
-    if (habit.archived) continue;
+    if (habit.archived || isFinished(habit, today)) continue;
     const streak = computeStreaks(habit, doneMap.get(habit.id) || EMPTY, today).current;
     if (streak >= 2 && (!leader || streak > leader.streak)) leader = { habit, streak };
   }
   return leader;
+}
+
+// Süreli alışkanlığın gün gün tablosu (örneğin 40 günlük erken kalkma).
+export function challengeStatus(habit, done = EMPTY, today) {
+  const end = endDate(habit);
+  if (end === null) return null;
+  const days = [];
+  let doneCount = 0;
+  let missed = 0;
+  for (let i = 0; i < habit.duration; i += 1) {
+    const key = addDays(habit.startDate, i);
+    let state;
+    if (key > today) state = 'future';
+    else if (done.has(key)) {
+      state = 'done';
+      doneCount += 1;
+    } else if (key === today) state = 'today';
+    else if (isInArchive(habit, key)) state = 'out';
+    else {
+      state = 'miss';
+      missed += 1;
+    }
+    days.push({ key, n: i + 1, state });
+  }
+  const notStarted = today < habit.startDate;
+  const dayNumber = notStarted ? 0 : Math.min(habit.duration, diffDays(today, habit.startDate) + 1);
+  return {
+    end, days, done: doneCount, missed, dayNumber,
+    left: habit.duration - dayNumber, total: habit.duration,
+    notStarted, finished: today > end,
+  };
 }
 
 // Verilere dayanan kısa ilerleme yorumu.

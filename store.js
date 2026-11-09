@@ -3,18 +3,25 @@
 // Veri modeli:
 //   users/{uid}/habits/{habitId}      alışkanlık bilgileri
 //   users/{uid}/logs/{habitId}_{yıl}  { habitId, year, days: ["YYYY-AA-GG", ...] }
+//   users/{uid}/books/{kitapId}       { title, author, totalPages, status, pages: { gün: sayfa } }
+//   users/{uid}/words/{habitId}_{ay}  { habitId, month, items: { kelimeId: { word, meaning, ... } } }
 //
 // Bir alışkanlığın bir yılı tek belgededir. Böylece sayfa açılışında okunan belge
 // sayısı "alışkanlık + alışkanlık x yıl" kadar kalır; gün başına belge okunmaz.
 
 import { addDays, isValidKey, parseKey, todayKey } from './dates.js';
 import { logDocId } from './backup.js';
+import { normalizeBook } from './books.js';
+import { byDoc, newWordId, wordDocId, wordsFromDoc } from './words.js';
+import { endDate } from './stats.js';
 
 const SDK_VERSION = '13.2.0';
 const SDK_BASE = `https://www.gstatic.com/firebasejs/${SDK_VERSION}`;
 const WRITE_DELAY_MS = 350;
 const SLOW_LOAD_MS = 10000;
 const BATCH_LIMIT = 400;
+const COLLECTIONS = ['habits', 'logs', 'books', 'words'];
+const flags = (value) => Object.fromEntries(COLLECTIONS.map((name) => [name, value]));
 
 export function isConfigured(config) {
   const required = ['apiKey', 'authDomain', 'projectId', 'appId'];
@@ -55,6 +62,9 @@ function normalizeHabit(id, data) {
     archived: Boolean(data.archived),
     archivedRanges: Array.isArray(data.archivedRanges) ? data.archivedRanges : [],
     unit: typeof data.unit === 'string' ? data.unit : '',
+    duration: Number.isInteger(data.duration) && data.duration > 0 ? data.duration : null,
+    mastery: data.mastery === 'hours' || data.mastery === 'words' ? data.mastery : null,
+    dailyDefault: Number.isFinite(data.dailyDefault) && data.dailyDefault > 0 ? data.dailyDefault : null,
     target: Number.isFinite(data.target) && data.target > 0 ? data.target : null,
     floor: Number.isFinite(data.floor) && data.floor > 0 ? data.floor : null,
     selfScores: data.selfScores && typeof data.selfScores === 'object' ? data.selfScores : {},
@@ -74,6 +84,9 @@ export class Store {
     this.user = null;
     this.loadError = null;
     this.habits = [];
+    this.books = [];
+    this.words = [];
+    this.wordDocs = new Map(); // belge -> kelime sayısı
     this.logs = new Map();
     this.done = new Map();
     this.values = new Map(); // alışkanlık -> { gün: sayı }
@@ -84,10 +97,10 @@ export class Store {
     this.unsubs = [];
     this.flushTimer = null;
     this.slowTimer = null;
-    this.signature = { habits: '', logs: '' };
-    this.seen = { habits: false, logs: false };
-    this.arrived = { habits: false, logs: false };
-    this.pendingFlags = { habits: false, logs: false };
+    this.signature = flags('');
+    this.seen = flags(false);
+    this.arrived = flags(false);
+    this.pendingFlags = flags(false);
   }
 
   subscribe(fn) {
@@ -165,12 +178,15 @@ export class Store {
     this.pending.clear();
     this.sent.clear();
     this.habits = [];
+    this.books = [];
+    this.words = [];
+    this.wordDocs = new Map();
     this.logs = new Map();
     this.done = new Map();
     this.values = new Map();
-    this.signature = { habits: '', logs: '' };
-    this.seen = { habits: false, logs: false };
-    this.pendingFlags = { habits: false, logs: false };
+    this.signature = flags('');
+    this.seen = flags(false);
+    this.pendingFlags = flags(false);
     this.hasPendingWrites = false;
   }
 
@@ -190,8 +206,8 @@ export class Store {
 
   startListening() {
     this.loadError = null;
-    this.seen = { habits: false, logs: false };
-    this.arrived = { habits: false, logs: false };
+    this.seen = flags(false);
+    this.arrived = flags(false);
     this.setPhase('loading');
     clearTimeout(this.slowTimer);
     this.slowTimer = setTimeout(() => {
@@ -209,6 +225,8 @@ export class Store {
     this.unsubs = [
       this.fs.onSnapshot(this.col('habits'), options, (snap) => this.onHabits(snap), onError),
       this.fs.onSnapshot(this.col('logs'), options, (snap) => this.onLogs(snap), onError),
+      this.fs.onSnapshot(this.col('books'), options, (snap) => this.onBooks(snap), onError),
+      this.fs.onSnapshot(this.col('words'), options, (snap) => this.onWords(snap), onError),
     ];
   }
 
@@ -261,22 +279,47 @@ export class Store {
     if (!snap.metadata.fromCache) this.seen[which] = true;
     this.arrived[which] = true;
     this.pendingFlags[which] = snap.metadata.hasPendingWrites;
-    const pendingNow = this.pendingFlags.habits || this.pendingFlags.logs;
+    const pendingNow = COLLECTIONS.some((name) => this.pendingFlags[name]);
     const pendingChanged = pendingNow !== this.hasPendingWrites;
     this.hasPendingWrites = pendingNow;
 
     // Yeni cihazda boş önbellek "hiç veri yok" gibi gösterilmez; sunucu yanıtı beklenir.
     // Alışkanlıklar kayıtlardan önce gelirse ekran açılmaz; yoksa işaretler bir an boş görünür.
-    const hasCached = this.habits.length > 0;
-    const serverReady = this.seen.habits && this.seen.logs;
-    const bothArrived = this.arrived.habits && this.arrived.logs;
-    if (this.phase !== 'ready' && bothArrived && (serverReady || hasCached)) {
+    const hasCached = this.habits.length > 0 || this.books.length > 0 || this.words.length > 0;
+    const serverReady = COLLECTIONS.every((name) => this.seen[name]);
+    const allArrived = COLLECTIONS.every((name) => this.arrived[name]);
+    if (this.phase !== 'ready' && allArrived && (serverReady || hasCached)) {
       clearTimeout(this.slowTimer);
       this.setPhase('ready');
     } else if (changed && this.phase === 'ready') {
       this.emit('data');
     }
     if (pendingChanged) this.emit('sync');
+  }
+
+  onBooks(snap) {
+    const books = snap.docs.map((d) => normalizeBook(d.id, d.data()));
+    const signature = JSON.stringify(books);
+    const changed = signature !== this.signature.books;
+    this.signature.books = signature;
+    this.books = books;
+    this.afterSnapshot('books', snap, changed);
+  }
+
+  onWords(snap) {
+    const words = [];
+    const docs = new Map();
+    snap.docs.forEach((d) => {
+      const list = wordsFromDoc(d.id, d.data());
+      docs.set(d.id, list.length);
+      words.push(...list);
+    });
+    const signature = JSON.stringify(words);
+    const changed = signature !== this.signature.words;
+    this.signature.words = signature;
+    this.words = words;
+    this.wordDocs = docs;
+    this.afterSnapshot('words', snap, changed);
   }
 
   rebuildDone() {
@@ -310,9 +353,15 @@ export class Store {
   }
 
   // İşareti hemen ekranda gösterir. Hızlı aç-kapa yapılırsa gereksiz yazma oluşmaz.
+  canMark(habit, key) {
+    if (!habit || key > todayKey() || key < habit.startDate) return false;
+    const end = endDate(habit);
+    return end === null || key <= end;
+  }
+
   toggle(habitId, key) {
     const habit = this.habits.find((h) => h.id === habitId);
-    if (!habit || key > todayKey() || key < habit.startDate) return false;
+    if (!this.canMark(habit, key)) return false;
     const value = !this.isDone(habitId, key);
     const id = `${habitId}|${key}`;
     const base = this.sent.has(id) ? this.sent.get(id).value : this.savedDone(habitId, key);
@@ -359,7 +408,7 @@ export class Store {
   // Günlük sayı. Boş değer sayıyı siler. Yıl belgesinin içine yazılır, yeni belge açmaz.
   setValue(habitId, key, value) {
     const habit = this.habits.find((h) => h.id === habitId);
-    if (!habit || key > todayKey() || key < habit.startDate) return false;
+    if (!this.canMark(habit, key)) return false;
     const current = this.values.get(habitId)?.[key];
     if ((value === null && current === undefined) || value === current) return true;
     const map = { ...(this.values.get(habitId) || {}) };
@@ -373,6 +422,74 @@ export class Store {
       { merge: true },
     ));
     return true;
+  }
+
+  // Kitaplar
+
+  addBook({ title, author, totalPages, page }) {
+    const ref = this.fs.doc(this.col('books'));
+    const today = todayKey();
+    this.watch(this.fs.setDoc(ref, {
+      title,
+      author,
+      totalPages,
+      startPage: page || 0,
+      status: 'reading',
+      startDate: today,
+      finishedAt: null,
+      pages: { [today]: page || 0 },
+      createdAt: new Date().toISOString(),
+    }));
+    return ref.id;
+  }
+
+  updateBook(id, fields) {
+    this.watch(this.fs.updateDoc(this.ref('books', id), fields));
+  }
+
+  // Bugünün sayfası. Kitap belgesinin içine yazılır, yeni belge açmaz.
+  setBookPage(id, page) {
+    this.watch(this.fs.setDoc(this.ref('books', id), { pages: { [todayKey()]: page } }, { merge: true }));
+  }
+
+  deleteBook(id) {
+    this.watch(this.fs.deleteDoc(this.ref('books', id)));
+  }
+
+  // Kelime arşivi. Her işlem yalnızca o ayın belgesine tek yazma yapar.
+
+  addWord(habitId, { word, meaning, example }) {
+    const date = todayKey();
+    const id = newWordId();
+    const month = date.slice(0, 7);
+    const item = {
+      word, meaning, example, date, learned: false, createdAt: new Date().toISOString(),
+    };
+    this.watch(this.fs.setDoc(this.ref('words', wordDocId(habitId, date)), { habitId, month, items: { [id]: item } }, { merge: true }));
+    return id;
+  }
+
+  updateWord(item, fields) {
+    this.watch(this.fs.setDoc(this.ref('words', item.docId), { habitId: item.habitId, items: { [item.id]: fields } }, { merge: true }));
+  }
+
+  deleteWord(item) {
+    const ref = this.ref('words', item.docId);
+    if ((this.wordDocs.get(item.docId) || 0) <= 1) this.watch(this.fs.deleteDoc(ref));
+    else this.watch(this.fs.setDoc(ref, { items: { [item.id]: this.fs.deleteField() } }, { merge: true }));
+  }
+
+  // Birden çok kelimenin durumunu değiştirir. Aynı aydaki kelimeler tek yazmayla gider.
+  setLearned(items, learned) {
+    const groups = [...byDoc(items).entries()];
+    chunk(groups, BATCH_LIMIT).forEach((part) => {
+      const batch = this.fs.writeBatch(this.db);
+      part.forEach(([docId, list]) => {
+        const changes = Object.fromEntries(list.map((item) => [item.id, { learned }]));
+        batch.set(this.ref('words', docId), { habitId: list[0].habitId, items: changes }, { merge: true });
+      });
+      this.watch(batch.commit());
+    });
   }
 
   addHabit(fields) {
@@ -413,10 +530,11 @@ export class Store {
   deleteHabit(id) {
     this.flush();
     const { deleteDoc, writeBatch } = this.fs;
-    const logIds = [...this.logs.entries()].filter(([, log]) => log.habitId === id).map(([logId]) => logId);
-    chunk(logIds, BATCH_LIMIT).forEach((part) => {
+    const logIds = [...this.logs.entries()].filter(([, log]) => log.habitId === id).map(([logId]) => ['logs', logId]);
+    const wordIds = [...new Set(this.words.filter((w) => w.habitId === id).map((w) => w.docId))].map((docId) => ['words', docId]);
+    chunk([...logIds, ...wordIds], BATCH_LIMIT).forEach((part) => {
       const batch = writeBatch(this.db);
-      part.forEach((logId) => batch.delete(this.ref('logs', logId)));
+      part.forEach(([name, docId]) => batch.delete(this.ref(name, docId)));
       this.watch(batch.commit());
     });
     this.watch(deleteDoc(this.ref('habits', id)));
@@ -430,6 +548,10 @@ export class Store {
       ...ops.habitDeletes.map((id) => (b) => b.delete(this.ref('habits', id))),
       ...ops.habitSets.map(({ id, data }) => (b) => b.set(this.ref('habits', id), data)),
       ...ops.logSets.map(({ id, data }) => (b) => b.set(this.ref('logs', id), data)),
+      ...(ops.bookDeletes || []).map((id) => (b) => b.delete(this.ref('books', id))),
+      ...(ops.bookSets || []).map(({ id, data }) => (b) => b.set(this.ref('books', id), data)),
+      ...(ops.wordDeletes || []).map((id) => (b) => b.delete(this.ref('words', id))),
+      ...(ops.wordSets || []).map(({ id, data }) => (b) => b.set(this.ref('words', id), data)),
     ];
     await Promise.all(chunk(steps, BATCH_LIMIT).map((part) => {
       const batch = writeBatch(this.db);

@@ -52,6 +52,8 @@ const ICONS = {
   upload: 'M12 20V9M7 13l5-5 5 5M5 4h14',
   calendar: 'M5 6h14v14H5zM5 10.5h14M9 3.5v4M15 3.5v4',
   more: 'M5 12h.01M12 12h.01M19 12h.01',
+  sound: 'M4 9.5v5h3.5L12 18V6L7.5 9.5H4zM15.5 9a4 4 0 0 1 0 6M18.5 6.5a7.5 7.5 0 0 1 0 11',
+  cards: 'M8 4h11v13H8zM5 7v13h11',
 };
 
 export function icon(name, size = 22) {
