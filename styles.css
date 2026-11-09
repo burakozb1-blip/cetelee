@@ -182,8 +182,8 @@ a.book-name { color: inherit; text-decoration: none; }
 .word-tools { display: grid; gap: 8px; }
 .word-search { width: 100%; min-height: 44px; padding: 8px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); font-size: 1rem; }
 .word-search::placeholder { color: var(--muted); }
-.segmented-fill { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); justify-self: stretch; }
-.segmented-fill button { min-width: 0; padding: 4px 6px; font-size: .875rem; }
+.segmented.segmented-fill { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); justify-self: stretch; }
+.segmented.segmented-fill button { min-width: 0; padding: 4px 6px; font-size: .875rem; }
 .word-group { display: grid; gap: 4px; margin-top: 8px; }
 .word-day { color: var(--muted); font-size: .8125rem; font-weight: 650; }
 .word-list { display: grid; border-top: 1px solid var(--line); }
